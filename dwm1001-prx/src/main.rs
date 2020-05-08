@@ -59,6 +59,7 @@ use {
     },
     hal::{gpio::Level, pac::TIMER0},
     rtt_target::{rprintln, rtt_init_print},
+    cortex_m::asm::bkpt,
 };
 
 #[cfg(not(feature = "51"))]
@@ -158,7 +159,17 @@ const APP: () = {
     fn radio(ctx: radio::Context) {
         match ctx.resources.esb_irq.radio_interrupt() {
             Err(Error::MaximumAttempts) => {}
-            Err(e) => panic!("Found error {:?}", e),
+            Err(Error::InternalError(n)) => {
+                unsafe {
+                    core::ptr::write_volatile(0x20000000 as *mut u32, n as u32);
+                }
+                bkpt();
+                panic!();
+            }
+            Err(e) => {
+                bkpt();
+                panic!("Found error {:?}", e);
+            },
             Ok(state) => {} //rprintln!("{:?}", state).unwrap(),
         }
     }

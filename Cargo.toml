@@ -14,3 +14,4 @@ opt-level = "s"
 debug = true
 lto = true
 codegen-units = 1
+debug-assertions = true

@@ -117,7 +117,7 @@ const APP: () = {
         // 16 Mhz / 2**9 = 31250 Hz
         timer.prescaler.write(|w| unsafe { w.prescaler().bits(9) });
         timer.shorts.modify(|_, w| w.compare0_clear().enabled());
-        timer.cc[0].write(|w| unsafe { w.bits(31250u32) });
+        timer.cc[0].write(|w| unsafe { w.bits(3125u32) });
         timer.events_compare[0].reset();
         timer.intenset.write(|w| w.compare0().set());
 
