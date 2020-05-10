@@ -74,8 +74,8 @@ const RESP: &'static str = "Hello back";
 #[rtfm::app(device = crate::hal::pac, peripherals = true)]
 const APP: () = {
     struct Resources {
-        esb_app: EsbApp<U512, U256>,
-        esb_irq: EsbIrq<U512, U256, TIMER0>,
+        esb_app: EsbApp<U8192, U8192>,
+        esb_irq: EsbIrq<U8192, U8192, TIMER0>,
         esb_timer: IrqTimer<TIMER0>,
         serial: Uarte<UARTE0>,
     }
@@ -90,7 +90,7 @@ const APP: () = {
         let mut serial = apply_config!(p0, uart);
         writeln!(serial, "\r\n--- INIT ---").unwrap();
 
-        static BUFFER: EsbBuffer<U512, U256> = EsbBuffer {
+        static BUFFER: EsbBuffer<U8192, U8192> = EsbBuffer {
             app_to_radio_buf: BBBuffer(ConstBBBuffer::new()),
             radio_to_app_buf: BBBuffer(ConstBBBuffer::new()),
             timer_flag: AtomicBool::new(false),
@@ -109,6 +109,14 @@ const APP: () = {
         esb_irq.start_receiving().unwrap();
 
         rtt_init_print!();
+
+        if let Some(msg) = panic_persist::get_panic_message_bytes() {
+            // write the error message in reasonable chunks
+            for i in msg.chunks(255) {
+                let _ = serial.write(i);
+            }
+            bkpt();
+        }
 
         init::LateResources {
             esb_app,
@@ -146,7 +154,7 @@ const APP: () = {
 
                 // Respond in the next transfer
 
-                writeln!(ctx.resources.serial, "--- Sending Hello ---\r\n").unwrap();
+                // writeln!(ctx.resources.serial, "--- Sending Hello ---\r\n").unwrap();
                 let mut response = ctx.resources.esb_app.grant_packet(esb_header).unwrap();
                 let length = RESP.as_bytes().len();
                 &response[..length].copy_from_slice(RESP.as_bytes());
@@ -159,13 +167,6 @@ const APP: () = {
     fn radio(ctx: radio::Context) {
         match ctx.resources.esb_irq.radio_interrupt() {
             Err(Error::MaximumAttempts) => {}
-            Err(Error::InternalError(n)) => {
-                unsafe {
-                    core::ptr::write_volatile(0x20000000 as *mut u32, n as u32);
-                }
-                bkpt();
-                panic!();
-            }
             Err(e) => {
                 bkpt();
                 panic!("Found error {:?}", e);
@@ -180,11 +181,14 @@ const APP: () = {
     }
 };
 
-#[inline(never)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    rprintln!("{}", info);
-    loop {
-        compiler_fence(Ordering::SeqCst);
-    }
-}
+// #[inline(never)]
+// #[panic_handler]
+// fn panic(info: &PanicInfo) -> ! {
+//     rprintln!("{}", info);
+//     loop {
+//         compiler_fence(Ordering::SeqCst);
+//     }
+// }
+
+// Panic provider crate
+use panic_persist;

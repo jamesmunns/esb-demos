@@ -62,6 +62,7 @@ use {
         uarte::{Baudrate, Parity, Uarte},
     },
     rtt_target::{rprintln, rtt_init_print},
+    cortex_m::asm::bkpt,
 };
 
 const MAX_PAYLOAD_SIZE: u8 = 64;
@@ -73,8 +74,8 @@ static ATTEMPTS_FLAG: AtomicBool = AtomicBool::new(false);
 #[rtfm::app(device = crate::hal::pac, peripherals = true)]
 const APP: () = {
     struct Resources {
-        esb_app: EsbApp<U512, U256>,
-        esb_irq: EsbIrq<U512, U256, TIMER0>,
+        esb_app: EsbApp<U8192, U8192>,
+        esb_irq: EsbIrq<U8192, U8192, TIMER0>,
         esb_timer: IrqTimer<TIMER0>,
         serial: Uarte<UARTE0>,
         delay: TIMER1,
@@ -88,9 +89,9 @@ const APP: () = {
 
         let uart = ctx.device.UARTE0;
         let mut serial = apply_config!(p0, uart);
-        writeln!(serial, "\r\n--- INIT ---").unwrap();
+        write!(serial, "\r\n--- INIT ---").unwrap();
 
-        static BUFFER: EsbBuffer<U512, U256> = EsbBuffer {
+        static BUFFER: EsbBuffer<U8192, U8192> = EsbBuffer {
             app_to_radio_buf: BBBuffer(ConstBBBuffer::new()),
             radio_to_app_buf: BBBuffer(ConstBBBuffer::new()),
             timer_flag: AtomicBool::new(false),
@@ -117,7 +118,7 @@ const APP: () = {
         // 16 Mhz / 2**9 = 31250 Hz
         timer.prescaler.write(|w| unsafe { w.prescaler().bits(9) });
         timer.shorts.modify(|_, w| w.compare0_clear().enabled());
-        timer.cc[0].write(|w| unsafe { w.bits(3125u32) });
+        timer.cc[0].write(|w| unsafe { w.bits(12u32) });
         timer.events_compare[0].reset();
         timer.intenset.write(|w| w.compare0().set());
 
@@ -126,6 +127,14 @@ const APP: () = {
         timer.tasks_start.write(|w| unsafe { w.bits(1) });
 
         rtt_init_print!();
+
+        if let Some(msg) = panic_persist::get_panic_message_bytes() {
+            // write the error message in reasonable chunks
+            for i in msg.chunks(255) {
+                let _ = serial.write(i);
+            }
+            bkpt();
+        }
 
         init::LateResources {
             esb_app,
@@ -139,6 +148,10 @@ const APP: () = {
     #[idle(resources = [serial, esb_app])]
     fn idle(ctx: idle::Context) -> ! {
         let mut pid = 0;
+        let mut ct_tx: usize = 0;
+        let mut ct_rx: usize = 0;
+        let mut ct_err: usize = 0;
+
         loop {
             let esb_header = EsbHeader::build()
                 .max_payload(MAX_PAYLOAD_SIZE)
@@ -155,14 +168,22 @@ const APP: () = {
 
             // Did we receive any packet ?
             if let Some(response) = ctx.resources.esb_app.read_packet() {
-                writeln!(ctx.resources.serial, "Payload: ").unwrap();
-                ctx.resources.serial.write(&response[..]).unwrap();
-                let rssi = response.get_header().rssi();
-                writeln!(ctx.resources.serial, "\r\nrssi: {}", rssi).unwrap();
+                ct_rx += 1;
+                if (ct_tx % 512) == 0 {
+                    write!(ctx.resources.serial, "Payload: ").unwrap();
+                    ctx.resources.serial.write(&response[..]).unwrap();
+                    let rssi = response.get_header().rssi();
+                    write!(ctx.resources.serial, " | rssi: {}", rssi).unwrap();
+                }
                 response.release();
             }
 
-            writeln!(ctx.resources.serial, "--- Sending Hello ---\r\n").unwrap();
+
+            if (ct_tx % 512) == 0 {
+                write!(ctx.resources.serial, "\r--- Sending Hello --- | tx: {} rx: {} err: {} |: ", ct_tx, ct_rx, ct_err).unwrap();
+            }
+            ct_tx += 1;
+
             let mut packet = ctx.resources.esb_app.grant_packet(esb_header).unwrap();
             let length = MSG.as_bytes().len();
             &packet[..length].copy_from_slice(MSG.as_bytes());
@@ -171,7 +192,8 @@ const APP: () = {
 
             while !DELAY_FLAG.load(Ordering::Acquire) {
                 if ATTEMPTS_FLAG.load(Ordering::Acquire) {
-                    writeln!(ctx.resources.serial, "--- Ack not received ---\r\n").unwrap();
+                    ct_err += 1;
+                    write!(ctx.resources.serial, "--- Ack not received --- | tx: {} rx: {} err: {} |\r\n", ct_tx, ct_rx, ct_err).unwrap();
                     ATTEMPTS_FLAG.store(false, Ordering::Release);
                 }
             }
@@ -202,11 +224,13 @@ const APP: () = {
     }
 };
 
-#[inline(never)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    rprintln!("{}", info);
-    loop {
-        compiler_fence(Ordering::SeqCst);
-    }
-}
+use panic_persist;
+
+// #[inline(never)]
+// #[panic_handler]
+// fn panic(info: &PanicInfo) -> ! {
+//     rprintln!("{}", info);
+//     loop {
+//         compiler_fence(Ordering::SeqCst);
+//     }
+// }
