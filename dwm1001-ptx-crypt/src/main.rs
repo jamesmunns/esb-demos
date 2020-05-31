@@ -45,6 +45,11 @@ use nrf52832_hal as hal;
 #[cfg(feature = "52840")]
 use nrf52840_hal as hal;
 
+use embedded_hal::blocking::delay::DelayMs;
+use embedded_hal::timer::CountDown;
+use hal::timer::Instance;
+use rand::Rng as _;
+
 use {
     core::{
         default::Default,
@@ -58,12 +63,19 @@ use {
     },
     hal::{
         gpio::Level,
-        pac::{TIMER0, TIMER1, UARTE0},
+        pac::{TIMER0, TIMER1, TIMER2, UARTE0},
         uarte::{Baudrate, Parity, Uarte},
+        Rng, Timer,
     },
     rtt_target::{rprintln, rtt_init_print},
     cortex_m::asm::bkpt,
 };
+
+use chacha20poly1305::ChaCha8Poly1305; // Or `XChaCha20Poly1305`
+use chacha20poly1305::aead::{Aead, NewAead};
+use chacha20poly1305::aead::generic_array::{GenericArray, typenum::U128};
+
+use chacha20poly1305::aead::heapless::{Vec, consts::*};
 
 const MAX_PAYLOAD_SIZE: u8 = 64;
 const MSG: &'static str = "Hello from PTX";
@@ -79,6 +91,8 @@ const APP: () = {
         esb_timer: IrqTimer<TIMER0>,
         serial: Uarte<UARTE0>,
         delay: TIMER1,
+        timer2: TIMER2,
+        rng: Rng,
     }
 
     #[init]
@@ -143,63 +157,113 @@ const APP: () = {
             esb_timer,
             serial,
             delay: timer,
+            timer2: ctx.device.TIMER2,
+            rng: Rng::new(ctx.device.RNG),
         }
     }
 
-    #[idle(resources = [serial, esb_app])]
+    #[idle(resources = [serial, esb_app, rng, timer2])]
     fn idle(ctx: idle::Context) -> ! {
         let mut pid = 0;
         let mut ct_tx: usize = 0;
         let mut ct_rx: usize = 0;
         let mut ct_err: usize = 0;
 
+        let mut buf_nonce = [0u8; 12];
+        let mut buf_key = [0u8; 32];
+
+        ctx.resources.timer2.set_oneshot();
+
         loop {
-            let esb_header = EsbHeader::build()
-                .max_payload(MAX_PAYLOAD_SIZE)
-                .pid(pid)
-                .pipe(0)
-                .no_ack(false)
-                .check()
-                .unwrap();
-            if pid == 3 {
-                pid = 0;
-            } else {
-                pid += 1;
-            }
+            for chunk in &[8, 16, 32, 64, 128, 192, 252 - 16 - 12] {
+                ctx.resources.rng.random(&mut buf_key);
+                let key = GenericArray::clone_from_slice(&buf_key);
+                let aead = ChaCha8Poly1305::new(key);
 
-            // Did we receive any packet ?
-            if let Some(response) = ctx.resources.esb_app.read_packet() {
-                ct_rx += 1;
-                if (ct_tx % 512) == 0 {
-                    write!(ctx.resources.serial, "Payload: ").unwrap();
-                    ctx.resources.serial.write(&response[..]).unwrap();
-                    let rssi = response.get_header().rssi();
-                    write!(ctx.resources.serial, " | rssi: {}", rssi).unwrap();
+                ctx.resources.rng.random(&mut buf_nonce);
+                let nonce = GenericArray::from_slice(&buf_nonce); // 128-bits; unique per message
+
+                let mut buffer: Vec<u8, U252> = Vec::new();
+                // ctx.resources.rng.gen_range(0, 252-16)
+                for _ in 0..*chunk {
+                    buffer.push(ctx.resources.rng.random_u8()).ok();
                 }
-                response.release();
-            }
+
+                ctx.resources.timer2.timer_start(10_000_000u32);
+                // Encrypt `buffer` in-place, replacing the plaintext contents with ciphertext
+                let encr_start = ctx.resources.timer2.read_counter();
+                aead.encrypt_in_place(nonce, b"", &mut buffer).expect("encryption failure!");
+                let encr_stop = ctx.resources.timer2.read_counter();
+
+                // `buffer` now contains the message ciphertext
+                rprintln!("len: {}", buffer.len());
+
+                // Decrypt `buffer` in-place, replacing its ciphertext context with the original plaintext
+                let decr_start = ctx.resources.timer2.read_counter();
+                aead.decrypt_in_place(nonce, b"", &mut buffer).expect("decryption failure!");
+                let decr_stop = ctx.resources.timer2.read_counter();
 
 
-            if (ct_tx % 512) == 0 {
-                write!(ctx.resources.serial, "\r--- Sending Hello --- | tx: {} rx: {} err: {} |: ", ct_tx, ct_rx, ct_err).unwrap();
-            }
-            ct_tx += 1;
 
-            let mut packet = ctx.resources.esb_app.grant_packet(esb_header).unwrap();
-            let length = MSG.as_bytes().len();
-            &packet[..length].copy_from_slice(MSG.as_bytes());
-            packet.commit(length);
-            ctx.resources.esb_app.start_tx();
+                rprintln!("encr: {}uS decr: {}uS", (encr_stop - encr_start), (decr_stop - decr_start));
 
-            while !DELAY_FLAG.load(Ordering::Acquire) {
-                if ATTEMPTS_FLAG.load(Ordering::Acquire) {
-                    ct_err += 1;
-                    write!(ctx.resources.serial, "--- Ack not received --- | tx: {} rx: {} err: {} |\r\n", ct_tx, ct_rx, ct_err).unwrap();
-                    ATTEMPTS_FLAG.store(false, Ordering::Release);
+                while ctx.resources.timer2.read_counter() <= 1_000_000 {
+                    // rprintln!("{}", ctx.resources.timer2.read_counter());
                 }
             }
-            DELAY_FLAG.store(false, Ordering::Release);
+            rprintln!("");
+            while ctx.resources.timer2.read_counter() <= 3_000_000 {
+                // rprintln!("{}", ctx.resources.timer2.read_counter());
+            }
         }
+
+        // loop {
+        //     let esb_header = EsbHeader::build()
+        //         .max_payload(MAX_PAYLOAD_SIZE)
+        //         .pid(pid)
+        //         .pipe(0)
+        //         .no_ack(false)
+        //         .check()
+        //         .unwrap();
+        //     if pid == 3 {
+        //         pid = 0;
+        //     } else {
+        //         pid += 1;
+        //     }
+
+        //     // Did we receive any packet ?
+        //     if let Some(response) = ctx.resources.esb_app.read_packet() {
+        //         ct_rx += 1;
+        //         if (ct_tx % 512) == 0 {
+        //             write!(ctx.resources.serial, "Payload: ").unwrap();
+        //             ctx.resources.serial.write(&response[..]).unwrap();
+        //             let rssi = response.get_header().rssi();
+        //             write!(ctx.resources.serial, " | rssi: {}", rssi).unwrap();
+        //         }
+        //         response.release();
+        //     }
+
+
+        //     if (ct_tx % 512) == 0 {
+        //         write!(ctx.resources.serial, "\r--- Sending Hello --- | tx: {} rx: {} err: {} |: ", ct_tx, ct_rx, ct_err).unwrap();
+        //     }
+        //     ct_tx += 1;
+
+        //     let mut packet = ctx.resources.esb_app.grant_packet(esb_header).unwrap();
+        //     let length = MSG.as_bytes().len();
+        //     &packet[..length].copy_from_slice(MSG.as_bytes());
+        //     packet.commit(length);
+        //     ctx.resources.esb_app.start_tx();
+
+        //     while !DELAY_FLAG.load(Ordering::Acquire) {
+        //         if ATTEMPTS_FLAG.load(Ordering::Acquire) {
+        //             ct_err += 1;
+        //             write!(ctx.resources.serial, "--- Ack not received --- | tx: {} rx: {} err: {} |\r\n", ct_tx, ct_rx, ct_err).unwrap();
+        //             ATTEMPTS_FLAG.store(false, Ordering::Release);
+        //         }
+        //     }
+        //     DELAY_FLAG.store(false, Ordering::Release);
+        // }
     }
 
     #[task(binds = RADIO, resources = [esb_irq], priority = 3)]

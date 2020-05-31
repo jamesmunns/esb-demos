@@ -3,7 +3,11 @@ members = [
     "nrf5x-prx",
     "nrf5x-ptx",
     "dwm1001-ptx",
+    "dwm1001-ptx-crypt",
     "dwm1001-prx",
+
+    "nrf52840-ptx",
+    "nrf52840-prx",
 ]
 
 [profile.dev]

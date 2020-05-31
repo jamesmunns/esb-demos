@@ -61,7 +61,7 @@ use {
         pac::{TIMER0, TIMER1, UARTE0},
         uarte::{Baudrate, Parity, Uarte},
     },
-    rtt_target::{rprintln, rtt_init_print},
+    rtt_target::{rprintln, rprint, rtt_init_print},
     cortex_m::asm::bkpt,
 };
 
@@ -99,6 +99,8 @@ const APP: () = {
         let addresses = Addresses::default();
         let config = ConfigBuilder::default()
             .maximum_transmit_attempts(0)
+            .wait_for_ack_timeout(5000)
+            .retransmit_delay(5500)
             .check()
             .unwrap();
         let (esb_app, esb_irq, esb_timer) = BUFFER
@@ -119,7 +121,7 @@ const APP: () = {
         // 16 Mhz / 2**9 = 31250 Hz
         timer.prescaler.write(|w| unsafe { w.prescaler().bits(9) });
         timer.shorts.modify(|_, w| w.compare0_clear().enabled());
-        timer.cc[0].write(|w| unsafe { w.bits(12u32) });
+        timer.cc[0].write(|w| unsafe { w.bits(3125u32) });
         timer.events_compare[0].reset();
         timer.intenset.write(|w| w.compare0().set());
 
@@ -129,11 +131,8 @@ const APP: () = {
 
         rtt_init_print!();
 
-        if let Some(msg) = panic_persist::get_panic_message_bytes() {
-            // write the error message in reasonable chunks
-            for i in msg.chunks(255) {
-                let _ = serial.write(i);
-            }
+        if let Some(msg) = panic_persist::get_panic_message_utf8() {
+            rprintln!("panic: {}", msg);
             bkpt();
         }
 
@@ -170,18 +169,18 @@ const APP: () = {
             // Did we receive any packet ?
             if let Some(response) = ctx.resources.esb_app.read_packet() {
                 ct_rx += 1;
-                if (ct_tx % 512) == 0 {
-                    write!(ctx.resources.serial, "Payload: ").unwrap();
-                    ctx.resources.serial.write(&response[..]).unwrap();
+                if (ct_tx % 8) == 0 {
+                    rprint!("Payload: ");
+                    rprint!("{:?}", &response[..]);
                     let rssi = response.get_header().rssi();
-                    write!(ctx.resources.serial, " | rssi: {}", rssi).unwrap();
+                    rprintln!(" | rssi: {}", rssi);
                 }
                 response.release();
             }
 
 
-            if (ct_tx % 512) == 0 {
-                write!(ctx.resources.serial, "\r--- Sending Hello --- | tx: {} rx: {} err: {} |: ", ct_tx, ct_rx, ct_err).unwrap();
+            if (ct_tx % 8) == 0 {
+                rprintln!("\r--- Sending Hello --- | tx: {} rx: {} err: {} |: ", ct_tx, ct_rx, ct_err);
             }
             ct_tx += 1;
 
@@ -194,7 +193,7 @@ const APP: () = {
             while !DELAY_FLAG.load(Ordering::Acquire) {
                 if ATTEMPTS_FLAG.load(Ordering::Acquire) {
                     ct_err += 1;
-                    write!(ctx.resources.serial, "--- Ack not received --- | tx: {} rx: {} err: {} |\r\n", ct_tx, ct_rx, ct_err).unwrap();
+                    // rprintln!("--- Ack not received --- | tx: {} rx: {} err: {} |\r\n", ct_tx, ct_rx, ct_err);
                     ATTEMPTS_FLAG.store(false, Ordering::Release);
                 }
             }
