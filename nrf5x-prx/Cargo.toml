@@ -31,3 +31,21 @@ fast-ru = ["esb/fast-ru"]
 52810 = ["nrf52810-hal"]
 52832 = ["nrf52832-hal"]
 52840 = ["nrf52840-hal"]
+
+[profile.release]
+opt-level = 3
+debug = true
+lto = true
+codegen-units = 1
+debug-assertions = true
+
+[patch.crates-io]
+maitake-sync            = { git = "https://github.com/jamesmunns/mycelium/", rev = "3d70f02bcc0de0e0cc0602ddc2b4aee7a34c5201" }
+# embassy-futures         = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
+# embassy-sync            = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
+# embassy-executor        = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
+# embassy-time            = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
+# embassy-nrf             = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
+# embassy-usb             = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
+# embedded-io             = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
+# embedded-io-async       = { git = "https://github.com/embassy-rs/embassy",   rev = "2c87b31395d0ea54ae6fffa47918392333578882" }
