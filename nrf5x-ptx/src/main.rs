@@ -32,6 +32,7 @@ macro_rules! config {
 #[macro_use]
 mod config;
 
+use esb::peripherals::{PtrTimer, Timer0, RADIO};
 // Import the right HAL/PAC crate, depending on the target chip
 #[cfg(feature = "51")]
 use nrf51_hal as hal;
@@ -82,8 +83,8 @@ static ATTEMPTS_FLAG: AtomicBool = AtomicBool::new(false);
 const APP: () = {
     struct Resources {
         esb_app: EsbApp<U1024, U1024>,
-        esb_irq: EsbIrq<U1024, U1024, TIMER0, StatePTX>,
-        esb_timer: IrqTimer<TIMER0>,
+        esb_irq: EsbIrq<U1024, U1024, Timer0, StatePTX>,
+        esb_timer: IrqTimer<Timer0>,
         serial: Uarte<UARTE0>,
         delay: TIMER1,
     }
@@ -120,7 +121,7 @@ const APP: () = {
             .check()
             .unwrap();
         let (esb_app, esb_irq, esb_timer) = BUFFER
-            .try_split(ctx.device.TIMER0, ctx.device.RADIO, addresses, config)
+            .try_split(unsafe { Timer0::take() }, RADIO, addresses, config)
             .unwrap();
 
         // setup timer for delay
