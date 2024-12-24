@@ -32,6 +32,7 @@ macro_rules! config {
 #[macro_use]
 mod config;
 
+use esb::{bbq2::queue::BBQueue, peripherals::{PtrTimer, Timer0, RADIO}};
 // Import the right HAL/PAC crate, depending on the target chip
 #[cfg(feature = "51")]
 use nrf51_hal as hal;
@@ -50,7 +51,7 @@ use {
         sync::atomic::{compiler_fence, AtomicBool, Ordering},
     },
     esb::{
-        consts::*, irq::StatePRX, Addresses, BBBuffer, ConfigBuilder, ConstBBBuffer, Error, EsbApp,
+        irq::StatePRX, Addresses, ConfigBuilder, Error, EsbApp,
         EsbBuffer, EsbHeader, EsbIrq, IrqTimer,
     },
     hal::{gpio::Level, pac::TIMER0},
@@ -75,9 +76,9 @@ const RESP: &'static str = "Hello back";
 #[rtfm::app(device = crate::hal::pac, peripherals = true)]
 const APP: () = {
     struct Resources {
-        esb_app: EsbApp<U1024, U1024>,
-        esb_irq: EsbIrq<U1024, U1024, TIMER0, StatePRX>,
-        esb_timer: IrqTimer<TIMER0>,
+        esb_app: EsbApp<1024, 1024>,
+        esb_irq: EsbIrq<1024, 1024, Timer0, StatePRX>,
+        esb_timer: IrqTimer<Timer0>,
         serial: Uarte<UARTE0>,
     }
 
@@ -101,9 +102,9 @@ const APP: () = {
         let mut serial = apply_config!(p0, uart);
         writeln!(serial, "\n--- INIT ---").unwrap();
 
-        static BUFFER: EsbBuffer<U1024, U1024> = EsbBuffer {
-            app_to_radio_buf: BBBuffer(ConstBBBuffer::new()),
-            radio_to_app_buf: BBBuffer(ConstBBBuffer::new()),
+        static BUFFER: EsbBuffer<1024, 1024> = EsbBuffer {
+            app_to_radio_buf: BBQueue::new(),
+            radio_to_app_buf: BBQueue::new(),
             timer_flag: AtomicBool::new(false),
         };
         let addresses = Addresses::default();
@@ -113,7 +114,7 @@ const APP: () = {
             .check()
             .unwrap();
         let (esb_app, esb_irq, esb_timer) = BUFFER
-            .try_split(ctx.device.TIMER0, ctx.device.RADIO, addresses, config)
+            .try_split(unsafe { Timer0::take() }, RADIO, addresses, config)
             .unwrap();
         let mut esb_irq = esb_irq.into_prx();
         esb_irq.start_receiving().unwrap();

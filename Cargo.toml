@@ -13,3 +13,7 @@ debug = true
 lto = true
 codegen-units = 1
 debug-assertions = true
+
+[patch.crates-io.maitake-sync]
+git = "https://github.com/jamesmunns/mycelium/"
+rev = "3d70f02bcc0de0e0cc0602ddc2b4aee7a34c5201"
